@@ -1,0 +1,26 @@
+# Local database, WAL files, backups, and audit data
+data/
+
+# Generated test and runtime artifacts
+tests/e2e/artifacts/
+**/*.log
+**/*.pid
+**/__pycache__/
+**/*.pyc
+**/test-results/
+
+# Built desktop binaries and backup copies
+本地上传工具/dist/
+**/*.exe
+**/*.bak*
+
+# Local-only legacy pages and exported reports
+导出数据/
+每天最高/
+连对档位筛选本地版/
+主用区/
+
+# Local dependency folders
+node_modules/
+**/.pytest_cache/
+**/.ruff_cache/

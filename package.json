@@ -1,0 +1,15 @@
+{
+  "name": "unified-lottery-analysis",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test --test-reporter=spec tests/*/*.test.js",
+    "test:backend": "node --test --test-reporter=spec tests/backend/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=server/*.js --test-coverage-exclude=server/index.js --test-coverage-lines=80 --test-coverage-functions=80 --test-coverage-branches=80 tests/backend/*.test.js"
+  }
+}

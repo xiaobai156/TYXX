@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>统一分析平台</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./assets/css/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#page-content">跳到主内容</a>
+  <header class="app-header status-bar">
+    <div class="status-left">
+      <button
+        id="btn-back-calendar"
+        class="btn btn-outline back-calendar-button"
+        type="button"
+        data-action="select-page"
+        data-page="calendar"
+      >◀ 返回日历</button>
+      <div class="connection-panel status-indicator" aria-label="本地服务状态">
+        <span id="connection-dot" class="connection-dot dot" aria-hidden="true"></span>
+        <span id="connection-label">正在连接本地服务</span>
+      </div>
+      <span id="top-date-display" class="top-date-display">日历主页</span>
+      <strong id="active-project-label" class="top-project-label">统一分析平台</strong>
+      <nav class="top-shortcuts" aria-label="主导航">
+        <div id="main-nav" class="nav-inner" role="tablist"></div>
+      </nav>
+    </div>
+    <div class="status-actions">
+      <div id="project-switcher" class="project-switcher" role="tablist" aria-label="切换分析项目"></div>
+      <button class="btn btn-outline refresh-button" type="button" data-action="refresh" title="刷新本地数据">↻ 刷新本地</button>
+    </div>
+  </header>
+
+  <div id="app-status" class="app-status" role="status" aria-live="polite"></div>
+  <main id="page-content" class="page-content" tabindex="-1"></main>
+
+  <script type="module" src="./assets/js/app.js"></script>
+</body>
+</html>
