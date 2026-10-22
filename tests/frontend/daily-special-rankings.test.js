@@ -312,19 +312,19 @@ test('生肖和杀两肖加入月度排行统计，其他种类不加入', () =>
   assert.doesNotMatch(otherHtml, /data-action="show-daily-ranking"/);
 });
 
-test('大围月度卡片只统计严格低于68%的日期，67.99%显示而68%不显示', () => {
+test('大围月度卡片只统计严格低于70%的日期，69.99%显示而70%不显示', () => {
   const project = { id: 'dawei_shahao', name: '大围+杀号', modes: [{ id: 'dawei', name: '大围' }] };
   const snapshot = { days: {
-    '2026-07-28': { dawei: { query: '01', entries: daweiRateEntries('低于', 206, 303) } },
-    '2026-07-27': { dawei: { query: '01', entries: daweiRateEntries('等于', 68, 100) } }
+    '2026-07-28': { dawei: { query: '01', entries: daweiRateEntries('低于', 212, 303) } },
+    '2026-07-27': { dawei: { query: '01', entries: daweiRateEntries('等于', 70, 100) } }
   } };
   const html = renderMonth(project, snapshot.days);
   const modal = renderDailyRankingModal({ project, snapshot, monthKey: '2026-07', modeId: 'dawei' });
 
-  assert.match(html, /本月低于68%：<b>1天<\/b>/);
+  assert.match(html, /本月低于70%：<b>1天<\/b>/);
   assert.match(html, /data-action="show-daily-ranking"[^>]*data-mode="dawei"/);
-  assert.match(modal, /本月低于68%：<b>1天<\/b>/);
-  assert.match(modal, /2026-07-28[\s\S]*当日总目录：<b>303条<\/b>[\s\S]*当日胜率：<b>67\.99%<\/b>/);
+  assert.match(modal, /本月低于70%：<b>1天<\/b>/);
+  assert.match(modal, /2026-07-28[\s\S]*当日总目录：<b>303条<\/b>[\s\S]*当日胜率：<b>69\.97%<\/b>/);
   assert.doesNotMatch(modal, /2026-07-27/);
 });
 

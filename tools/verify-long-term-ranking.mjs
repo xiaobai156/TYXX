@@ -8,7 +8,7 @@ import { buildModeDirectoryStats } from '../assets/js/domain/stats.js';
 import { buildLongTermRanking } from '../assets/js/domain/long-term-ranking.js';
 
 const baseUrl = 'http://127.0.0.1:23962';
-const reportDir = new URL('../tests/e2e/artifacts/long-term-ranking-20261002/', import.meta.url);
+const reportDir = new URL('../tests/e2e/artifacts/long-term-ranking-20261014/', import.meta.url);
 
 function referenceRows(projectId, modeId, snapshot, cutoff) {
   const histories = new Map();
@@ -35,13 +35,15 @@ function referenceRows(projectId, modeId, snapshot, cutoff) {
     const settledIndices = states.flatMap((state, index) => typeof state === 'boolean' ? [index] : []);
     const days = settledIndices.length;
     const right = states.filter(state => state === true).length;
+    const scoreDays = Math.min(days, 120);
+    const scoreRight = settledIndices.slice(-120).filter(index => states[index] === true).length;
     // Algebraically equivalent count-based formula, independent of production's proportion form.
-    const score = days ? Math.round(1000 * (right + 3.8416 / 2
-      - 1.96 * Math.sqrt(right * (days - right) / days + 3.8416 / 4)) / (days + 3.8416)) / 10 : 0;
+    const score = scoreDays ? Math.round(1000 * (scoreRight + 3.8416 / 2
+      - 1.96 * Math.sqrt(scoreRight * (scoreDays - scoreRight) / scoreDays + 3.8416 / 4)) / (scoreDays + 3.8416)) / 10 : 0;
     const window = states.slice(settledIndices[Math.max(0, days - 120)] ?? states.length);
     const maxWrong = Math.max(0, ...window.map(value => value === false ? 'F' : '|').join('').split('|').map(run => run.length));
     const recent = settledIndices.slice(-30).map(index => states[index]);
-    return { name, days, right, score, maxWrong, recentRate: recent.length ? recent.filter(Boolean).length / recent.length : 0 };
+    return { name, days, right, scoreDays, scoreRight, score, maxWrong, recentRate: recent.length ? recent.filter(Boolean).length / recent.length : 0 };
   });
   const compare = (a, b) => b.score - a.score || a.maxWrong - b.maxWrong || b.recentRate - a.recentRate
     || b.days - a.days || a.name.localeCompare(b.name, 'zh-CN', { numeric: true });
@@ -66,6 +68,7 @@ for (const project of PROJECTS) {
       const actual = buildLongTermRanking(buildModeDirectoryStats(input));
       const expected = referenceRows(project.id, mode.id, snapshot, cutoff);
       assert.deepEqual(actual.map(row => ({ name: row.name, days: row.daysInSystem, right: row.totalRight,
+        scoreDays: row.longTermDays, scoreRight: row.longTermRight,
         score: row.longTermScore, maxWrong: row.recent120MaxWrong, recentRate: row.recent30Rate })), expected, `${project.id}/${mode.id}/${cutoff}`);
       const prefix = { ...snapshot, days: Object.fromEntries(Object.entries(snapshot.days).filter(([date]) => date <= cutoff)) };
       const prefixRows = buildLongTermRanking(buildModeDirectoryStats({ ...input, snapshot: prefix, asOfDate: '' }));
@@ -75,7 +78,8 @@ for (const project of PROJECTS) {
       assert.ok(actual.filter(row => !row.rankingEligible).every(row => row.officialRank === null && row.daysInSystem < 120));
       history.push({ cutoff, officialCount: official.length, observationCount: actual.length - official.length,
         top5: official.slice(0, 5).map(row => ({ name: row.name, rank: row.officialRank, score: row.longTermScore,
-          days: row.daysInSystem, right: row.totalRight, maxWrong120: row.recent120MaxWrong, recent30Rate: row.recent30Rate })) });
+          days: row.daysInSystem, right: row.totalRight, scoreDays: row.longTermDays, scoreRight: row.longTermRight,
+          maxWrong120: row.recent120MaxWrong, recent30Rate: row.recent30Rate })) });
     }
     const latestInput = { projectId: project.id, modeId: mode.id, snapshot, settledOnly: true };
     const latest = buildLongTermRanking(buildModeDirectoryStats(latestInput)).filter(row => row.rankingEligible);

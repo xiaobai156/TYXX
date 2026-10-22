@@ -136,10 +136,17 @@ test('filters snapshots by date and mode, exposes versions, and honors ETag', as
   assert.deepEqual(Object.keys(body.snapshot.days), ['2026-07-26', '2026-07-27']);
   assert.deepEqual(Object.keys(body.snapshot.days['2026-07-26']), ['dawei']);
   const entry = body.snapshot.days['2026-07-26'].dawei.entries[0];
-  assert.match(entry.created_at, /^\d{4}-\d{2}-\d{2}T/);
-  assert.match(entry.updated_at, /^\d{4}-\d{2}-\d{2}T/);
-  assert.match(entry.content_hash, /^[a-f0-9]{64}$/);
-  assert.equal(entry.version, entry.updated_at);
+  assert.equal(typeof entry.content, 'string');
+  assert.equal(entry.created_at, undefined);
+  assert.equal(entry.content_hash, undefined);
+
+  const withMetadata = await fetch(`${url}&includeMetadata=1`);
+  assert.equal(withMetadata.status, 200);
+  const metaEntry = (await withMetadata.json()).snapshot.days['2026-07-26'].dawei.entries[0];
+  assert.match(metaEntry.created_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(metaEntry.updated_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(metaEntry.content_hash, /^[a-f0-9]{64}$/);
+  assert.equal(metaEntry.version, metaEntry.updated_at);
 
   const notModified = await fetch(url, { headers: { 'if-none-match': etag } });
   assert.equal(notModified.status, 304);
@@ -148,6 +155,53 @@ test('filters snapshots by date and mode, exposes versions, and honors ETag', as
   assert.equal((await fetch(`${baseUrl}/api/projects/dawei_shahao/snapshot?from=bad`)).status, 400);
   assert.equal((await fetch(`${baseUrl}/api/projects/dawei_shahao/snapshot?from=2026-07-27&to=2026-07-26`)).status, 400);
   assert.equal((await fetch(`${baseUrl}/api/projects/dawei_shahao/snapshot?modes=missing`)).status, 400);
+
+  // 非法参数即便带着匹配的 If-None-Match 也必须返回 400，不能被 304 短路。
+  for (const badQuery of ['from=bad', 'from=2026-07-27&to=2026-07-26', 'modes=missing']) {
+    const badUrl = `${baseUrl}/api/projects/dawei_shahao/snapshot?${badQuery}`;
+    const guarded = await fetch(badUrl, { headers: { 'if-none-match': etag } });
+    assert.equal(guarded.status, 400, `${badQuery} 带 If-None-Match 时应仍为 400`);
+  }
+});
+
+test('bumps the snapshot version on every write so stale ETags never win', async (t) => {
+  const { baseUrl } = await startTestServer(t);
+  const origin = { origin: baseUrl };
+  const date = '2026-07-28';
+  const url = `${baseUrl}/api/projects/pingte/snapshot`;
+  const save = content => jsonRequest(baseUrl, `/api/projects/pingte/dates/${date}/modes/pingteyixiao`, {
+    method: 'PUT', headers: origin,
+    body: JSON.stringify({ query: '鼠', entries: [{ name: '目录甲', content }] })
+  });
+
+  const versions = new Set();
+  let previousEtag = null;
+  for (const content of ['鼠', '牛', '虎', '兔']) {
+    await save(content);
+    const response = await fetch(url);
+    assert.equal(response.status, 200);
+    const etag = response.headers.get('etag');
+    assert.notEqual(etag, previousEtag, '内容变化后 ETag 必须变化');
+    // 用上一轮 ETag 请求必须拿到 200 和新内容，不能是 304。
+    if (previousEtag) {
+      const stale = await fetch(url, { headers: { 'if-none-match': previousEtag } });
+      assert.equal(stale.status, 200);
+      const body = await stale.json();
+      assert.equal(body.snapshot.days[date].pingteyixiao.entries[0].content, content);
+    }
+    versions.add((await response.json()).dataVersion);
+    previousEtag = etag;
+  }
+  assert.equal(versions.size, 4, '每次写入都必须产生新的 dataVersion');
+});
+
+test('gives different projects different ETags for identical-looking snapshots', async (t) => {
+  const { baseUrl } = await startTestServer(t);
+  const etagOf = async projectId => (
+    await fetch(`${baseUrl}/api/projects/${projectId}/snapshot`)
+  ).headers.get('etag');
+  const etags = new Set([await etagOf('pingte'), await etagOf('dawei_shahao'), await etagOf('jiuxiang')]);
+  assert.equal(etags.size, 3, '不同项目不能共用 ETag');
 });
 
 test('provides directory rename/delete and date deletion APIs', async (t) => {

@@ -18,10 +18,13 @@ SQLite 启用 `WAL`、外键约束和 5 秒 `busy_timeout`。单模式保存、�
 
 ## JSON API
 
+`/api/long-term-stats` 直接复用详细分析页的 `buildModeDirectoryStats({settledOnly:true})` 和 `buildLongTermRanking`。响应为 `{ok:true,schemaVersion:"platform-ranking-v1",databasePath,projects}`；`projects[projectId]` 包含 `dataVersion` 和 `modes[modeId][目录名]`。目录字段为 `score`（平台显示的一位小数）、`days`、`wrong`、`eligible`、`currentState`（布尔或 null）、`currentStreak`。分数、资格和当前状态均与详细分析页一致：未开奖或无有效查询的最新日期返回 `null/0`（待定），缺失日历日期中断连续天数。所有项目在同一读事务中取得；每次请求重新计算，不缓存。调用方应校验接口版本、数据库绝对路径和项目/模式完整性，再应用自己的分数门槛。
+
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | `GET` | `/api/health` | 数据库快速检查 |
 | `GET` | `/api/projects` | 三个项目及 17 个模式 |
+| `GET` | `/api/long-term-stats` | 同一数据库读事务内的全部目录分数、正式榜资格及当前连对/连错 |
 | `GET` | `/api/projects/:projectId/snapshot` | 项目快照；可选 `from=YYYY-MM-DD`、`to=YYYY-MM-DD`、逗号分隔的 `modes` |
 | `PUT` | `/api/projects/:projectId/dates/:date/modes/:modeId` | 原子替换某日某模式 |
 | `POST` | `/api/projects/:projectId/modes/:modeId/batch` | 单目录跨最多 20 日事务写入 |

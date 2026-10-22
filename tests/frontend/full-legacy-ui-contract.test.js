@@ -107,8 +107,11 @@ test('restores the original calendar and workspace structure for every project',
     .map(match => match[1])
     .join('\n');
   assert.match(calendarRule, /grid-template-columns:\s*repeat\(7,\s*1fr\)/);
-  assert.match(dayCellRule, /aspect-ratio:\s*1/);
-  assert.match(dayCellRule, /font-size:\s*20px/);
+  // 2026-10-19 UI 修订（P1-15/P1-16，用户批准）：日期格由 1:1 正方形改为 96px 最小高度的紧凑格，空格补虚线边框。
+  assert.match(dayCellRule, /min-height:\s*96px/);
+  assert.match(dayCellRule, /font-size:\s*17px/);
+  assert.match(css, /\.calendar-blank\s*\{[\s\S]*?border:\s*1px dashed/);
+  assert.match(css, /\.calendar-legend\s*\{/);
   assert.match(css, /\.has-data-dot\s*\{[\s\S]*?border-radius:\s*50%/);
 });
 
@@ -124,8 +127,13 @@ test('restores the complete original detailed-analysis surface for every project
     assert.match(analysis, /class="analysis-table"/);
     for (const heading of [
       '#', '资料名称', '目前状态', '持续天数', '总连断', '最高连对天数',
-      '最高连错天数', '命中率', '7天命中率', '10天命中率', '近30错次', '本月错次', '入库天数'
+      '最高连错天数', '命中率', '近30错次', '本月错次', '入库天数'
     ]) assert.match(analysis, new RegExp(heading));
+    // 2026-10-19 用户要求隐藏这三列显示（长期分与同分排序仍用底层数据）。
+    // 评分说明里仍会提到「近30有效日命中率」，所以只断言表头排序键消失。
+    for (const key of ['recent30Rate', 'recent7', 'recent10']) {
+      assert.doesNotMatch(analysis, new RegExp(`data-key="${key}"`));
+    }
     assert.match(analysis, /class="sparkline"/);
     assert.match(analysis, /data-action="show-trend"/);
     assert.match(analysis, /data-action="manage-directory"/);
@@ -142,15 +150,17 @@ test('keeps the detailed-analysis table as readable as the legacy cloud version'
   const trendButtonRule = css.match(/\.trend-button\s*\{([\s\S]*?)\}/)?.[1] || '';
 
   assert.match(tableRule, /font-family:\s*"Microsoft YaHei"/);
-  assert.match(tableRule, /font-size:\s*18px/);
-  assert.match(sortButtonRule, /font-size:\s*13px/);
-  assert.match(pagerRule, /font-size:\s*13px/);
-  assert.match(rankRule, /font-size:\s*26px/);
+  // 2026-10-19 UI 修订（P0-2/P0-3/P0-6/P2-23，用户批准）：正文改用 --fs-body（14px），表头 12px，
+  // 走势按钮改为 24px 图标按钮；`.btn` 规则在本文件更后面，故用 .btn.trend-button 提权。
+  assert.match(tableRule, /font-size:\s*var\(--fs-body\)/);
+  assert.match(tableRule, /line-height:\s*1\.35/);
+  assert.match(sortButtonRule, /font-size:\s*var\(--fs-table-head\)/);
+  assert.match(pagerRule, /font-size:\s*16px/);
+  assert.match(rankRule, /font-size:\s*29px/);
   assert.match(rankRule, /background:\s*transparent/);
-  assert.match(trendButtonRule, /min-width:\s*68px/);
-  assert.match(trendButtonRule, /min-height:\s*34px/);
-  assert.match(trendButtonRule, /padding:\s*6px 10px/);
-  assert.match(trendButtonRule, /font-size:\s*12px/);
+  assert.match(trendButtonRule, /width:\s*24px/);
+  assert.match(trendButtonRule, /height:\s*24px/);
+  assert.match(trendButtonRule, /padding:\s*0;/);
   assert.match(trendButtonRule, /font-weight:\s*800/);
 });
 
@@ -158,9 +168,9 @@ test('enlarges only the no-update directory rows by six pixels', () => {
   const rowRule = Array.from(css.matchAll(/\.no-update-row\s*\{([\s\S]*?)\}/g)).at(-1)?.[1] || '';
   const headerRule = Array.from(css.matchAll(/\.no-update-columns\s*\{([\s\S]*?)\}/g)).at(-1)?.[1] || '';
 
-  assert.match(rowRule, /font-size:\s*19px/);
+  assert.match(rowRule, /font-size:\s*21px/);
   assert.match(rowRule, /line-height:\s*1\.5/);
-  assert.match(headerRule, /font-size:\s*12px/);
+  assert.match(headerRule, /font-size:\s*15px/);
 });
 
 test('keeps every analysis mode in one centered desktop row', () => {
@@ -181,7 +191,7 @@ test('spaces trend dates for clear reading without changing the chart structure'
   assert.match(connectorRule, /left:\s*-32px/);
   assert.match(connectorRule, /width:\s*32px/);
   assert.match(dateRule, /width:\s*60px/);
-  assert.match(dateRule, /font-size:\s*13px/);
+  assert.match(dateRule, /font-size:\s*16px/);
   assert.match(dateRule, /text-align:\s*center/);
   assert.match(dateRule, /rotate\(-35deg\)/);
 });
@@ -205,14 +215,14 @@ test('matches the legacy cloud workspace cards and hover trend tooltip', () => {
   assert.match(rowRule, /line-height:\s*1\.4/);
   assert.match(rowRule, /background:\s*var\(--surface\)/);
   assert.match(nameRule, /width:\s*60%/);
-  assert.match(nameRule, /font-size:\s*16px/);
-  assert.match(detailRule, /font-size:\s*12px/);
+  assert.match(nameRule, /font-size:\s*18px/);
+  assert.match(detailRule, /font-size:\s*15px/);
   assert.match(badgeRule, /padding:\s*4px 10px/);
-  assert.match(badgeRule, /font-size:\s*13px/);
+  assert.match(badgeRule, /font-size:\s*16px/);
   assert.match(tooltipRule, /background:\s*rgb\(20 20 20 \/ 95%\)/);
   assert.match(tooltipRule, /border:\s*1px solid #444444/);
   assert.match(tooltipRule, /padding:\s*15px/);
-  assert.match(tooltipRule, /font-size:\s*13px/);
+  assert.match(tooltipRule, /font-size:\s*16px/);
   assert.match(css, /\.trend-chart-point:hover \.trend-point-tooltip/);
   assert.match(appJs, /class="trend-point-tooltip"/);
   assert.match(appJs, /<b>日期：<\/b>/);

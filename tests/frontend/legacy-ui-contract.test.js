@@ -250,14 +250,13 @@ test('does not change detailed-analysis or daily-stat numeric text while restyli
   );
 
   assert.match(analysisCells[1], /^目录甲/);
-  assert.equal(analysisCells[3], '✕ 连断中');
-  assert.deepEqual([...analysisCells.slice(4, 11), ...analysisCells.slice(13)].flatMap(numericTokens), [
+  assert.equal(analysisCells[2], '✕ 连断中');
+  // 2026-10-19 去掉近30有效日命中率、7天命中率、10天命中率三列显示后，列序号整体前移。
+  assert.deepEqual([...analysisCells.slice(3, 8), ...analysisCells.slice(10)].flatMap(numericTokens), [
     '1',
     '1',
     '1',
     '1',
-    '50.0%',
-    '50.0%',
     '50.0%',
     '1',
     '0',

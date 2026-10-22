@@ -167,7 +167,9 @@ async function setBatchDate(input, date) {
     assert.equal(await page.locator('#project-switcher [data-project]').count(), 3);
     const calendarCell = page.locator('.day-cell').first();
     const box = await calendarCell.boundingBox();
-    assert.ok(box && Math.abs(box.width - box.height) <= 2, JSON.stringify(box));
+    // 2026-10-19 UI 修订（P1-15，用户批准）：日期格由 1:1 正方形改为 96px 最小高度的紧凑格。
+    assert.ok(box && box.height >= 90 && box.height <= 160, JSON.stringify(box));
+    assert.ok(box && box.width > box.height, JSON.stringify(box));
     await assertNoPageOverflow(page);
     await page.screenshot({ path: path.join(ARTIFACT_DIR, 'desktop-1920-calendar.png'), fullPage: true });
 

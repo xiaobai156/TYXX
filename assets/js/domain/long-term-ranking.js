@@ -29,7 +29,11 @@ export function buildLongTermRanking(rows) {
     }
     let wrongStreak = 0;
     let recent120MaxWrong = 0;
-    for (const state of states.slice(start)) {
+    const recent120 = states.slice(start);
+    const longTermRight = recent120.filter(state => state === true).length;
+    // 窗口内一共错了多少次（用户要求这一列改显示总连断次数）。
+    const recent120WrongCount = recent120.filter(state => state === false).length;
+    for (const state of recent120) {
       // Keep pending dates inside the window: they break a streak, not count as a result.
       wrongStreak = state === false ? wrongStreak + 1 : 0;
       recent120MaxWrong = Math.max(recent120MaxWrong, wrongStreak);
@@ -37,8 +41,11 @@ export function buildLongTermRanking(rows) {
     const recent30 = states.filter(state => typeof state === 'boolean').slice(-30);
     return {
       ...row,
-      longTermScore: longTermScore(row.totalRight, row.daysInSystem),
+      longTermDays: covered,
+      longTermRight,
+      longTermScore: longTermScore(longTermRight, covered),
       recent120MaxWrong,
+      recent120WrongCount,
       recent30Rate: recent30.length ? recent30.filter(Boolean).length / recent30.length : 0,
       rankingEligible: row.daysInSystem >= LONG_TERM_MIN_DAYS
     };

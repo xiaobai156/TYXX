@@ -57,7 +57,7 @@ test('matches the cloud daily-stat spacing, type sizes, and surfaces', () => {
   const date = cssRule('.daily-stats-day-date');
   assert.match(date, /padding:\s*17px 14px/);
   assert.match(date, /background:\s*#202529/);
-  assert.match(date, /font-size:\s*19px/);
+  assert.match(date, /font-size:\s*21px/);
 
   const cards = cssRule('.daily-stats-day-cards');
   assert.match(cards, /gap:\s*11px/);
@@ -66,5 +66,5 @@ test('matches the cloud daily-stat spacing, type sizes, and surfaces', () => {
   const card = cssRule('.daily-stats-day-card');
   assert.match(card, /padding:\s*12px 13px/);
   assert.match(card, /background:\s*#14181a/);
-  assert.match(cssRule('.daily-stats-day-card-main > b'), /font-size:\s*25px/);
+  assert.match(cssRule('.daily-stats-day-card-main > b'), /font-size:\s*28px/);
 });

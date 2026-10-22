@@ -4,6 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 
 import { AppError, ValidationError } from './errors.js';
+import { buildPlatformRankingResults } from './long-term-stats.js';
 
 const MAX_JSON_BYTES = 128 * 1024 * 1024;
 const SECURITY_HEADERS = {
@@ -46,20 +47,22 @@ function sendSnapshot(request, response, store, projectId, searchParams) {
     .split(',')
     .map(value => value.trim())
     .filter(Boolean);
-  const snapshot = store.getSnapshot(projectId, {
-    from: searchParams.get('from') || '',
-    to: searchParams.get('to') || '',
-    modes,
-    includeMetadata: true
-  });
-  const payload = {
-    ok: true,
-    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
-    dataVersion: store.getSnapshotDataVersion(projectId),
-    snapshot
-  };
-  const body = JSON.stringify(payload);
-  const etag = `"${createHash('sha256').update(body).digest('hex')}"`;
+  const from = searchParams.get('from') || '';
+  const to = searchParams.get('to') || '';
+  const includeMetadata = searchParams.get('includeMetadata') === '1';
+  // 先做参数校验再判 304：否则带 If-None-Match 的非法请求会返回 304 而不是约定的 400。
+  store.validateSnapshotOptions(projectId, { from, to, modes });
+  const dataVersion = store.getSnapshotDataVersion(projectId);
+  const etagSource = [
+    SNAPSHOT_SCHEMA_VERSION,
+    projectId,
+    dataVersion,
+    from,
+    to,
+    [...modes].sort().join(','),
+    includeMetadata ? 'meta' : 'plain'
+  ].join('|');
+  const etag = `"${createHash('sha256').update(etagSource).digest('hex')}"`;
   const headers = {
     ...SECURITY_HEADERS,
     etag,
@@ -71,6 +74,13 @@ function sendSnapshot(request, response, store, projectId, searchParams) {
     response.end();
     return;
   }
+  const snapshot = store.getSnapshot(projectId, { from, to, modes, includeMetadata });
+  const payload = {
+    ok: true,
+    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+    dataVersion,
+    snapshot
+  };
   sendJson(response, 200, payload, headers);
 }
 
@@ -168,6 +178,10 @@ async function routeApi(request, response, store, pathname, searchParams, maxJso
   if (pathname === '/api/projects') {
     requireMethod(request, 'GET');
     return sendJson(response, 200, { ok: true, projects: store.listProjects() });
+  }
+  if (pathname === '/api/long-term-stats') {
+    requireMethod(request, 'GET');
+    return sendJson(response, 200, { ok: true, ...buildPlatformRankingResults(store) });
   }
   if (pathname === '/api/export') {
     requireMethod(request, 'GET');

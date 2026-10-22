@@ -187,12 +187,19 @@ function currentWorkspaceRecord(projectState) {
   return draft || getModeRecord(projectState.snapshot, projectState.date, projectState.modeId);
 }
 
+function loadingPanel() {
+  // The top banner already prints the progress text, so the body shows a skeleton (P0-5).
+  return `<div class="loading-panel" aria-busy="true" aria-label="${escapeHtml(ui.busy)}">
+    <div class="loading-skeleton" aria-hidden="true">${'<span></span>'.repeat(6)}</div>
+  </div>`;
+}
+
 function renderPage(project, projectState) {
   if (projectState.pageId === 'missing-directory-stats' && ui.busy) {
-    return `<div class="loading-panel" aria-busy="true">${escapeHtml(ui.busy)}</div>`;
+    return loadingPanel();
   }
   if (!projectState.snapshot && ui.busy) {
-    return `<div class="loading-panel" aria-busy="true">${escapeHtml(ui.busy)}</div>`;
+    return loadingPanel();
   }
   const shared = { project, projectState, busy: Boolean(ui.busy) };
   switch (projectState.pageId) {
@@ -361,11 +368,40 @@ function shiftMonth(delta) {
 
 function selectMonth(targetMonth) {
   const { projectState } = activeContext();
-  const [year, , day] = projectState.date.split('-').map(Number);
+  const [currentYear, , day] = projectState.date.split('-').map(Number);
+  const year = resolveYearForMonth(projectState, currentYear, targetMonth);
   const lastDay = new Date(Date.UTC(year, targetMonth, 0)).getUTCDate();
   store.setDate([
     year,
     String(targetMonth).padStart(2, '0'),
+    String(Math.min(day, lastDay)).padStart(2, '0')
+  ].join('-'));
+}
+
+// After a year rollover the current year may be empty, so fall back to the closest year
+// that actually holds data for the chosen month (the data itself is always keyed by full date).
+function resolveYearForMonth(projectState, currentYear, targetMonth) {
+  const years = [...new Set(Object.keys(projectState.snapshot?.days || {})
+    .map(date => Number(date.slice(0, 4)))
+    .filter(Number.isFinite))].sort((left, right) => left - right);
+  if (!years.length || years.includes(currentYear)) return currentYear;
+  const monthKey = String(targetMonth).padStart(2, '0');
+  const withMonth = years.filter(candidate => Object.keys(projectState.snapshot.days)
+    .some(date => date.startsWith(`${candidate}-${monthKey}-`)));
+  const pool = withMonth.length ? withMonth : years;
+  return pool.reduce((best, candidate) => (
+    Math.abs(candidate - currentYear) < Math.abs(best - currentYear) ? candidate : best
+  ), pool[0]);
+}
+
+function selectYear(targetYear) {
+  const { projectState } = activeContext();
+  if (!Number.isFinite(targetYear)) return;
+  const [, month, day] = projectState.date.split('-').map(Number);
+  const lastDay = new Date(Date.UTC(targetYear, month, 0)).getUTCDate();
+  store.setDate([
+    targetYear,
+    String(month).padStart(2, '0'),
     String(Math.min(day, lastDay)).padStart(2, '0')
   ].join('-'));
 }
@@ -650,15 +686,6 @@ async function handleClick(button) {
       render();
       break;
     }
-    case 'reset-analysis-ranking': {
-      const current = getAnalysisState(project.id, projectState.modeId);
-      current.sortKey = 'default';
-      current.sortCycle = 0;
-      ui.notice = '已恢复榜单顺序';
-      render();
-      elements.status.scrollIntoView({ block: 'center' });
-      break;
-    }
     case 'sort-analysis': {
       const current = getAnalysisState(project.id, projectState.modeId);
       ui.notice = '';
@@ -751,6 +778,9 @@ async function handleClick(button) {
       break;
     case 'select-month':
       selectMonth(Number(button.dataset.month));
+      break;
+    case 'select-year':
+      selectYear(Number(button.dataset.year));
       break;
     case 'today':
       store.setDate(localToday());

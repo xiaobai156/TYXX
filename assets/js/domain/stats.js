@@ -79,7 +79,16 @@ function summarizeStates(name, birthday, states, stateDates = []) {
 function buildModeHistory({ projectId, modeId, snapshot, settledOnly = false, asOfDate = '' }) {
   const days = getDays(snapshot);
   const names = new Set();
-  let listedDates = Object.keys(days).filter(date => !asOfDate || date <= asOfDate).sort();
+  // 种类级起始日：个别种类的数据来源在某天整体变了（例如平特尾从 2026-09-17 起只剩十几个站在更新），
+  // 之前的记录与新口径不可比，按用户裁定从该日起重新计算，更早的日期整段丢弃。
+  // 种类级起始日只对「真实跨过该日」的快照生效：若快照整体早于该日，说明是历史测试数据或旧快照，
+  // 起始日规则不适用，避免把整份数据过滤成空。
+  const rawStart = modeStartDates[`${projectId}/${modeId}`] || '';
+  const snapshotLastDate = Object.keys(days).sort().at(-1) || '';
+  const startDate = rawStart && snapshotLastDate >= rawStart ? rawStart : '';
+  let listedDates = Object.keys(days)
+    .filter(date => (!asOfDate || date <= asOfDate) && (!startDate || date >= startDate))
+    .sort();
   if (settledOnly && listedDates.length > 1) {
     const firstDay = Date.parse(listedDates[0]);
     const dayCount = Math.round((Date.parse(listedDates.at(-1)) - firstDay) / 86400000) + 1;
@@ -87,6 +96,14 @@ function buildModeHistory({ projectId, modeId, snapshot, settledOnly = false, as
       new Date(firstDay + index * 86400000).toISOString().slice(0, 10)
     ));
   }
+  // 抓取塌方日：当天入库站点数骤降到前一天的一半以下，说明是没抓到而不是杀错了。
+  // 只和「前一天」比，不和累计值比——累计值会随时间只增不减，站点陆续接入的早期会被误判。
+  // 连续塌方超过 COLLAPSE_MAX_RUN 天就不再判塌方：那说明是数据形态变了（比如只剩十几个站在更新），
+  // 不是抓取故障，否则会永久锁死、整个榜清零。
+  // 判定与建索引同轮完成，避免重复遍历条目。
+  const collapsedDays = new Set();
+  let previousCount = 0;
+  let collapseRun = 0;
   const dates = listedDates.map(date => {
     const day = days[date] || {};
     const record = day[modeId];
@@ -98,15 +115,44 @@ function buildModeHistory({ projectId, modeId, snapshot, settledOnly = false, as
       if (!entries.has(rawName)) entries.set(rawName, entry);
     }
     const query = String(record?.query ?? '');
+    let presentCount = 0;
+    for (const raw of entries.keys()) {
+      if (raw.trim()) presentCount += 1;
+    }
+    const dropped = previousCount >= COLLAPSE_MIN_ACTIVE
+      && presentCount / previousCount < COLLAPSE_RATIO;
+    if (dropped && collapseRun < COLLAPSE_MAX_RUN) {
+      collapsedDays.add(date);
+      collapseRun += 1;
+    } else if (dropped) {
+      collapseRun += 1;
+    } else {
+      collapseRun = 0;
+    }
+    previousCount = presentCount;
     return {
       date,
       emptyDay: Object.keys(day).length === 0,
+      collapsedDay: collapsedDays.has(date),
       query,
       queryIsValid: isValidQuery(projectId, modeId, query),
       entries
     };
   });
   return { projectId, modeId, dates, names, settledOnly };
+}
+
+const COLLAPSE_RATIO = 0.5;
+const COLLAPSE_MIN_ACTIVE = 20;
+const COLLAPSE_MAX_RUN = 3;
+
+// 种类级起始日：该日之前的记录与新口径不可比，整段丢弃。
+// 目前只有平特尾需要：2026-09-17 起数据源只剩 14~17 个站在更新，用户裁定从这天重新算。
+// 用可注入的方式而不是直接读全局常量，避免历史测试数据的日期被误伤。
+let modeStartDates = { 'pingte/pingtewei': '2026-09-17' };
+
+export function setModeStartDates(next) {
+  modeStartDates = { ...next };
 }
 
 function buildIndexedDirectoryStats(history, name) {
@@ -118,6 +164,11 @@ function buildIndexedDirectoryStats(history, name) {
   const stateDates = [];
   for (let index = birthdayIndex; index < history.dates.length; index += 1) {
     const day = history.dates[index];
+    // 塌方日整天跳过：不记对错、不算天数，也不中断连对连错。
+    // 必须放在最前面——抓取故障最常见的形态是当天连开奖号都没抓到，
+    // 若放在下面「无开奖号就记 null」之后，这些日子会先被 push(null)，连段照样被打断。
+    // 也不能 push(null)：summarizeStates 遇到 null 会把 currentStreak 归零。
+    if (day.collapsedDay) continue;
     if (history.settledOnly && !day.queryIsValid) {
       states.push(null);
       stateDates.push(day.date);
@@ -150,6 +201,16 @@ function buildIndexedDirectoryStats(history, name) {
 
 export function buildDirectoryStats({ projectId, modeId, snapshot, name, settledOnly = false }) {
   return buildIndexedDirectoryStats(buildModeHistory({ projectId, modeId, snapshot, settledOnly }), name);
+}
+
+export function buildDirectoryStatsBatch({ projectId, modeId, snapshot, names, settledOnly = false }) {
+  const history = buildModeHistory({ projectId, modeId, snapshot, settledOnly });
+  const result = new Map();
+  for (const name of names) {
+    const key = String(name ?? '');
+    if (!result.has(key)) result.set(key, buildIndexedDirectoryStats(history, key));
+  }
+  return result;
 }
 
 export function rankRightStreaksBeforeWrong(stateHistory) {
@@ -406,12 +467,16 @@ export function buildDailyModeSummary({
   }
   const targetNames = getEntries(record).map(entry => String(entry?.name ?? '')).filter(Boolean);
   const priorSnapshot = snapshotBefore(snapshot, date);
-  const entries = [...new Set(targetNames)]
-    .sort((left, right) => left.localeCompare(right, 'zh-CN'))
+  const uniqueNames = [...new Set(targetNames)]
+    .sort((left, right) => left.localeCompare(right, 'zh-CN'));
+  const priorStats = minimumPriorRightStreak <= 0
+    ? null
+    : buildDirectoryStatsBatch({ projectId, modeId, snapshot: priorSnapshot, names: uniqueNames });
+  const entries = uniqueNames
     .filter(name => {
-      if (minimumPriorRightStreak <= 0) return true;
-      const prior = buildDirectoryStats({ projectId, modeId, snapshot: priorSnapshot, name });
-      return prior.currentState === true && prior.currentStreak >= minimumPriorRightStreak;
+      if (!priorStats) return true;
+      const prior = priorStats.get(name);
+      return Boolean(prior) && prior.currentState === true && prior.currentStreak >= minimumPriorRightStreak;
     })
     .map(name => {
       const entry = findEntry(record, name);

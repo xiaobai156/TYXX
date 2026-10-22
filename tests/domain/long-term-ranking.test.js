@@ -30,8 +30,60 @@ test('120 days is inclusive and younger perfect records do not take official ran
     row('300天95%', [...Array(15).fill(false), ...Array(285).fill(true)]),
     row('120天95%', [...Array(6).fill(false), ...Array(114).fill(true)])
   ]);
-  assert.deepEqual(rows.map(item => item.name), ['121天全对', '120天全对', '300天95%', '120天95%', '119天全对', '待开奖']);
+  assert.deepEqual(rows.map(item => item.name), ['300天95%', '121天全对', '120天全对', '120天95%', '119天全对', '待开奖']);
   assert.deepEqual(rows.map(item => item.officialRank), [1, 2, 3, 4, null, null]);
+});
+
+test('long-term scores use only the last 120 valid results and preserve full history', () => {
+  const recent = [...Array(6).fill(false), ...Array(114).fill(true)];
+  const oldWrong = Object.freeze(row('旧错', Object.freeze([...Array(180).fill(false), ...recent])));
+  const oldRight = row('旧对', [...Array(180).fill(true), ...recent]);
+  const ranked = buildLongTermRanking([oldWrong, oldRight]);
+  for (const item of ranked) {
+    assert.equal(item.longTermDays, 120);
+    assert.equal(item.longTermRight, 114);
+    assert.equal(item.longTermScore, 89.5);
+    assert.equal(item.daysInSystem, 300);
+    assert.equal(item.stateHistory.length, 300);
+  }
+  assert.equal(ranked.find(item => item.name === '旧错').totalRight, 114);
+  assert.equal(ranked.find(item => item.name === '旧对').totalRight, 294);
+  assert.strictEqual(ranked.find(item => item.name === '旧错').stateHistory, oldWrong.stateHistory);
+});
+
+test('rolling replacement raises, lowers, or preserves the score according to the outgoing result', () => {
+  const tail = [...Array(9).fill(false), ...Array(110).fill(true)];
+  for (const outgoing of [true, false]) {
+    const states = [outgoing, ...tail];
+    const [before] = buildLongTermRanking([row('目录', states)]);
+    for (const incoming of [true, false]) {
+      const [after] = buildLongTermRanking([row('目录', [...states, incoming])]);
+      assert.equal(after.longTermDays, 120);
+      assert.equal(after.longTermRight, before.longTermRight + Number(incoming) - Number(outgoing));
+      assert.equal(Math.sign(after.longTermScore - before.longTermScore), Number(incoming) - Number(outgoing));
+      assert.equal(after.daysInSystem, 121);
+    }
+  }
+});
+
+test('unknown days do not consume the score window and observation scores remain unchanged', () => {
+  const [full] = buildLongTermRanking([row('跨空日', [false, null, ...Array(119).fill(true), null, true, null])]);
+  assert.equal(full.daysInSystem, 121);
+  assert.equal(full.longTermDays, 120);
+  assert.equal(full.longTermRight, 120);
+  assert.equal(full.longTermScore, 96.9);
+  const states = [...Array(3).fill(false), null, ...Array(116).fill(true), null];
+  const [young] = buildLongTermRanking([row('观察', states)]);
+  assert.equal(young.longTermDays, 119);
+  assert.equal(young.longTermScore, longTermScore(116, 119));
+  assert.equal(young.rankingEligible, false);
+  assert.equal(young.officialRank, null);
+  for (const states of [[], [null, null]]) {
+    const [empty] = buildLongTermRanking([row('无结果', states)]);
+    assert.equal(empty.longTermDays, 0);
+    assert.equal(empty.longTermScore, 0);
+    assert.equal(empty.officialRank, null);
+  }
 });
 
 test('the last 120 valid results clip older runs and retain unknown dates as streak breaks', () => {
@@ -44,6 +96,22 @@ test('the last 120 valid results clip older runs and retain unknown dates as str
   const [partial] = buildLongTermRanking([row('不足窗口', [false, false, null, true])]);
   assert.equal(partial.recent120MaxWrong, 2);
   assert.equal(partial.recent30Rate, 1 / 3);
+});
+
+test('the 120-day window also reports the total wrong count used by the table column', () => {
+  // 窗口内 20 次错但全不连续：最高连错是 1，总连断次数是 20。
+  const states = Array.from({ length: 140 }, (_, index) => (index % 7 === 0 ? false : true));
+  const [row120] = buildLongTermRanking([row('分散错', states)]);
+  assert.equal(row120.recent120MaxWrong, 1);
+  assert.equal(row120.recent120WrongCount, states.slice(-120).filter(state => state === false).length);
+
+  // 旧错段被 120 天窗口切掉，总次数只算窗口内。
+  const [clipped] = buildLongTermRanking([row('旧错段', [...Array(20).fill(false), ...Array(120).fill(true)])]);
+  assert.equal(clipped.recent120WrongCount, 0);
+
+  // 待定日期不算错。
+  const [pending] = buildLongTermRanking([row('待定', [false, null, false, null])]);
+  assert.equal(pending.recent120WrongCount, 2);
 });
 
 test('rounded long-term score dominates stability, then recent form, coverage, and name', () => {

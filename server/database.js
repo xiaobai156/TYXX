@@ -82,6 +82,18 @@ function runTransaction(connection, action) {
   }
 }
 
+// 每次写事务递增。快照版本必须用它而不是 max(updated_at)+行数：
+// updated_at 只到毫秒，同一毫秒内改内容时行数和时间戳都不变，版本号会原地不动，
+// 导致 ETag 命中 304、页面继续显示旧数据。
+function bumpSnapshotRevision(connection) {
+  connection.prepare(`
+    INSERT INTO app_meta(key, value) VALUES ('snapshot_revision', '1')
+    ON CONFLICT(key) DO UPDATE SET
+      value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  `).run();
+}
+
 function isValidDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split('-').map(Number);
@@ -255,9 +267,20 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
     PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
+    PRAGMA cache_size = -32768;
+    PRAGMA mmap_size = 268435456;
   `);
   migrate(connection);
   seedCatalog(connection);
+
+  // 启动时做一次深度完整性检查：health() 走轻量 SELECT 1，发现不了页损坏，
+  // 放到启动阶段一次性付掉成本，损坏时立刻失败而不是等用户打开页面才报错。
+  {
+    const check = connection.prepare('PRAGMA quick_check(1)').get();
+    if (check?.quick_check !== 'ok') {
+      throw new Error(`数据库完整性检查失败：${check?.quick_check}`);
+    }
+  }
 
   let closed = false;
 
@@ -364,6 +387,11 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
     return { sql: clauses.join(' AND '), params };
   }
 
+  function validateSnapshotOptions(projectId, options = {}) {
+    assertProject(projectId);
+    normalizeSnapshotOptions(projectId, options);
+  }
+
   function getSnapshot(projectId, options = {}) {
     const project = assertProject(projectId);
     const normalized = normalizeSnapshotOptions(projectId, options);
@@ -425,18 +453,16 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
     assertProject(projectId);
     const row = connection.prepare(`
       SELECT
+        (SELECT value FROM app_meta WHERE key = 'snapshot_revision') AS revision,
         (SELECT max(updated_at) FROM days WHERE project_id = ?) AS day_updated_at,
         (SELECT max(updated_at) FROM daily_modes WHERE project_id = ?) AS mode_updated_at,
-        (SELECT max(updated_at) FROM data_entries WHERE project_id = ?) AS entry_updated_at,
-        (SELECT count(*) FROM days WHERE project_id = ?) AS day_count,
-        (SELECT count(*) FROM daily_modes WHERE project_id = ?) AS mode_count,
-        (SELECT count(*) FROM data_entries WHERE project_id = ?) AS entry_count
-    `).get(projectId, projectId, projectId, projectId, projectId, projectId);
+        (SELECT max(updated_at) FROM data_entries WHERE project_id = ?) AS entry_updated_at
+    `).get(projectId, projectId, projectId);
     const latest = [row.day_updated_at, row.mode_updated_at, row.entry_updated_at]
       .filter(Boolean)
       .sort()
       .at(-1) || 'empty';
-    return `db-v${SCHEMA_VERSION}:${latest}:${row.day_count}:${row.mode_count}:${row.entry_count}`;
+    return `db-v${SCHEMA_VERSION}:r${row.revision || 0}:${latest}`;
   }
 
   function replaceMode(projectId, date, modeId, payload = {}) {
@@ -447,7 +473,10 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
     }
     const entries = normalizeEntries(payload.entries);
     const query = normalizeQuery(payload.query);
-    runTransaction(connection, () => writeMode(projectId, date, modeId, query, entries));
+    runTransaction(connection, () => {
+      writeMode(projectId, date, modeId, query, entries);
+      bumpSnapshotRevision(connection);
+    });
     return { saved: entries.length };
   }
 
@@ -485,6 +514,7 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
         writeModeQuery(projectId, row.date, modeId, row.query);
         upsertEntry.run(projectId, row.date, modeId, name, row.content, row.original);
       }
+      bumpSnapshotRevision(connection);
     });
     return { upserted: rows.length };
   }
@@ -492,19 +522,25 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
   function deleteDate(projectId, date) {
     assertProject(projectId);
     assertDate(date);
-    const result = runTransaction(connection, () => (
-      connection.prepare('DELETE FROM days WHERE project_id = ? AND date = ?').run(projectId, date)
-    ));
+    const result = runTransaction(connection, () => {
+      const outcome = connection.prepare('DELETE FROM days WHERE project_id = ? AND date = ?').run(projectId, date);
+      if (outcome.changes > 0) bumpSnapshotRevision(connection);
+      return outcome;
+    });
     return { deleted: result.changes > 0 };
   }
 
   function deleteDirectory(projectId, modeId, name) {
     assertMode(projectId, modeId);
     const directoryName = cleanName(name);
-    const result = runTransaction(connection, () => connection.prepare(`
-      DELETE FROM data_entries
-      WHERE project_id = ? AND mode_id = ? AND name = ?
-    `).run(projectId, modeId, directoryName));
+    const result = runTransaction(connection, () => {
+      const outcome = connection.prepare(`
+        DELETE FROM data_entries
+        WHERE project_id = ? AND mode_id = ? AND name = ?
+      `).run(projectId, modeId, directoryName);
+      if (outcome.changes > 0) bumpSnapshotRevision(connection);
+      return outcome;
+    });
     return { deleted: result.changes };
   }
 
@@ -512,10 +548,14 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
     assertMode(projectId, modeId);
     assertDate(date);
     const directoryName = cleanName(name);
-    const result = runTransaction(connection, () => connection.prepare(`
-      DELETE FROM data_entries
-      WHERE project_id = ? AND date = ? AND mode_id = ? AND name = ?
-    `).run(projectId, date, modeId, directoryName));
+    const result = runTransaction(connection, () => {
+      const outcome = connection.prepare(`
+        DELETE FROM data_entries
+        WHERE project_id = ? AND date = ? AND mode_id = ? AND name = ?
+      `).run(projectId, date, modeId, directoryName);
+      if (outcome.changes > 0) bumpSnapshotRevision(connection);
+      return outcome;
+    });
     return { deleted: result.changes > 0 };
   }
 
@@ -537,6 +577,7 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
         SET name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE project_id = ? AND mode_id = ? AND name = ?
       `).run(destinationName, projectId, modeId, sourceName);
+      if (result.changes > 0) bumpSnapshotRevision(connection);
       return { renamed: result.changes };
     });
   }
@@ -632,6 +673,7 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
           }
         }
       }
+      bumpSnapshotRevision(connection);
     });
     return counts;
   }
@@ -651,7 +693,12 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
   }
 
   function health() {
-    return connection.prepare('PRAGMA quick_check').get().quick_check === 'ok';
+    try {
+      connection.prepare('SELECT 1 AS ok').get();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function close() {
@@ -665,6 +712,7 @@ export function openLotteryDatabase({ dbPath, backupDir }) {
     dbPath: resolvedDbPath,
     backupDir: resolvedBackupDir,
     listProjects,
+    validateSnapshotOptions,
     getSnapshot,
     getSnapshotDataVersion,
     replaceMode,

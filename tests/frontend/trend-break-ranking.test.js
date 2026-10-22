@@ -473,6 +473,6 @@ test('uses larger muted warm-gray text for historical break chips', () => {
   const itemRule = cssRule('.trend-break-ranking-item');
 
   assert.match(itemRule, /color:\s*#b6b0a8/);
-  assert.match(itemRule, /font-size:\s*15px/);
+  assert.match(itemRule, /font-size:\s*17px/);
   assert.doesNotMatch(itemRule, /color:\s*#(?:ffffff|c8d2dc)/);
 });

@@ -7,7 +7,7 @@ const { chromium } = require('playwright');
 // Read-only regression against the running local service. Never seed real data.
 const ROOT = path.resolve(__dirname, '../..');
 const BASE_URL = process.env.RANKING_TEST_URL || 'http://127.0.0.1:23962/';
-const ARTIFACT_DIR = path.join(__dirname, 'artifacts/ranking-ui-followup-20261002');
+const ARTIFACT_DIR = path.join(__dirname, 'artifacts/ranking-window-20261014');
 const load = name => import(pathToFileURL(path.join(ROOT, 'assets/js', name)).href);
 const percent = value => `${(value * 100).toFixed(1)}%`;
 
@@ -16,6 +16,7 @@ async function rowsFromPage(page) {
     name: row.dataset.name,
     group: row.closest('tbody').dataset.rankingGroup,
     officialRank: row.dataset.officialRank,
+    scoreDetails: row.querySelector('.ranking-score-details').textContent.replace(/\s+/g, ' ').trim(),
     cells: [...row.children].map(cell => cell.querySelector('details > summary')?.textContent.trim() || cell.textContent.trim())
   })));
 }
@@ -60,6 +61,7 @@ function assertDefaultRows(actual, expected, label) {
     assert.equal(row.cells.at(-4), `${stat.recent120MaxWrong} 天`, `${label}/${row.name}: recent120 streak`);
     assert.equal(row.cells[2], percent(stat.recent30Rate), `${label}/${row.name}: recent30 rate`);
     assert.equal(row.cells.at(-1), `${stat.daysInSystem} 天`, `${label}/${row.name}: effective days`);
+    assert.ok(row.scoreDetails.includes(`长期分仅计算最近 ${stat.longTermDays} 个有效日，${stat.longTermRight} 对 / ${stat.longTermDays - stat.longTermRight} 错`), `${label}/${row.name}: score window details`);
   });
 }
 
@@ -176,6 +178,7 @@ function assertSortedRows(actual, baseline, key, columnIndex, cycle) {
       const rules = page.locator('.ranking-rules');
       if (!await rules.evaluate(element => element.open)) await rules.locator('summary').click();
       assert.match(await rules.innerText(), /Wilson.*z = 1.96/s);
+      assert.match(await rules.innerText(), /长期分只计算最近120个有效统计日/);
       const score = page.locator('.ranking-score-details').first();
       if (!await score.evaluate(element => element.open)) await score.locator('summary').click();
       assert.match(await score.innerText(), /同分先比较近120有效日最高连错/);

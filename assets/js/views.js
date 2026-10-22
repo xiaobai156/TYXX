@@ -3,7 +3,7 @@ import {
   snapshotSummary
 } from './data-model.js';
 import {
-  buildDirectoryStats,
+  buildDirectoryStatsBatch,
   buildDailyModeSummary,
   buildModeDirectoryStats,
   buildRecommendationScore
@@ -142,6 +142,11 @@ function modeSwitcherButton(mode, activeModeId) {
 
 export function renderCalendar({ project, projectState }) {
   const [year, month] = projectState.date.split('-').map(Number);
+  // Years that actually hold data, so the switcher can jump past empty years after a rollover.
+  const dataYears = [...new Set(Object.keys(projectState.snapshot?.days || {})
+    .map(date => Number(date.slice(0, 4)))
+    .filter(Number.isFinite))].sort((left, right) => left - right);
+  const hasYearData = dataYears.includes(year);
   const summary = snapshotSummary(projectState.snapshot);
   const allModeStats = Object.fromEntries(project.modes.map(mode => [
     mode.id,
@@ -213,6 +218,30 @@ export function renderCalendar({ project, projectState }) {
       </div>
     </div>
     <div class="month-selector" aria-label="选择月份">
+      <button
+        class="year-step"
+        type="button"
+        data-action="select-year"
+        data-year="${year - 1}"
+        aria-label="上一年 ${year - 1}"
+        title="上一年"
+      >◀</button>
+      <span class="year-label${hasYearData ? '' : ' empty-year'}" aria-live="polite">${year}年${hasYearData ? '' : '（无数据）'}</span>
+      <button
+        class="year-step"
+        type="button"
+        data-action="select-year"
+        data-year="${year + 1}"
+        aria-label="下一年 ${year + 1}"
+        title="下一年"
+      >▶</button>
+      <button
+        class="year-step today-jump"
+        type="button"
+        data-action="today"
+        aria-label="跳到今天"
+        title="跳到今天"
+      >今天</button>
       ${Array.from({ length: 12 }, (_, index) => `
         <button
           class="month-btn ${month === index + 1 ? 'active' : ''}"
@@ -221,6 +250,12 @@ export function renderCalendar({ project, projectState }) {
           data-month="${index + 1}"
         >${index + 1}月</button>
       `).join('')}
+    </div>
+    <div class="calendar-legend" aria-label="日历图例">
+      <span><i class="complete" aria-hidden="true"></i>数据完整</span>
+      <span><i class="incomplete" aria-hidden="true"></i>数据不完整</span>
+      <span><i class="empty" aria-hidden="true"></i>无数据</span>
+      <span><i class="today" aria-hidden="true"></i>今天</span>
     </div>
     <div class="calendar-grid" aria-label="${year}年${month}月">
       ${['日', '一', '二', '三', '四', '五', '六'].map(day => `<span class="weekday">${day}</span>`).join('')}
@@ -252,13 +287,14 @@ export function renderWorkspace({
     days: Object.fromEntries(Object.entries(projectState.snapshot?.days || {})
       .filter(([date]) => date < projectState.date))
   };
+  const priorStats = buildDirectoryStatsBatch({
+    projectId: project.id,
+    modeId: projectState.modeId,
+    snapshot: priorSnapshot,
+    names: rows.map(({ entry }) => entry.name)
+  });
   const previewRows = rows.map(({ entry, index }) => {
-    const prior = buildDirectoryStats({
-      projectId: project.id,
-      modeId: projectState.modeId,
-      snapshot: priorSnapshot,
-      name: entry.name
-    });
+    const prior = priorStats.get(String(entry.name ?? ''));
     const correct = queryIsValid && entry.name && entry.content
       ? evaluateCorrectness({
         projectId: project.id,
@@ -407,13 +443,10 @@ function analysisSortValue(row, key) {
     minRight: minimumRightStreak(row.stateHistory),
     maxWrong: row.maxWrongStreak,
     hitrate: days ? row.totalRight / days : 0,
-    recent7: row.recent7Rate,
-    recent10: row.recent10Rate,
     recent30Wrong: row.recent30WrongCount,
     monthWrong: currentMonthWrongCount(row),
     longTermScore: row.longTermScore,
-    recent120MaxWrong: row.recent120MaxWrong,
-    recent30Rate: row.recent30Rate,
+    recent120WrongCount: row.recent120WrongCount,
     days
   };
   return Number(values[key]) || 0;
@@ -461,13 +494,15 @@ function currentMonthWrongCount(row, monthKey = localDateString().slice(0, 7)) {
   ), 0);
 }
 
-function analysisHeader(label, key, analysisState) {
+function analysisHeader(label, key, analysisState, numeric = false) {
   const active = analysisState?.sortKey === key ? Number(analysisState.sortCycle) || 0 : 0;
-  const suffix = active ? (key === 'status'
-    ? active === 1 ? ' (连对优先)' : ' (连断优先)'
-    : active === 1 ? ' ↓' : ' ↑') : '';
+  const suffix = active
+    ? (key === 'status'
+      ? active === 1 ? ' (连对优先)' : ' (连断优先)'
+      : active === 1 ? ' ↓' : ' ↑')
+    : '<span class="sort-idle" aria-hidden="true">⇅</span>';
   const title = '按本列显示值排序；第三次点击恢复榜单顺序';
-  return `<th><button type="button" class="analysis-sort-button" title="${title}" data-action="sort-analysis" data-key="${key}">${label}${suffix}</button></th>`;
+  return `<th${numeric ? ' class="analysis-num"' : ''}><button type="button" class="analysis-sort-button" title="${title}" data-action="sort-analysis" data-key="${key}">${label}${suffix}</button></th>`;
 }
 
 export function renderAnalysis({ project, projectState, analysisState = {} }) {
@@ -490,31 +525,35 @@ export function renderAnalysis({ project, projectState, analysisState = {} }) {
   const day2 = missing.filter(row => row.noUpdateDays === 2).length;
   const day3 = missing.filter(row => row.noUpdateDays >= 3).length;
   const hasMinimum = project.id !== 'pingte';
-  const columnCount = hasMinimum ? 17 : 16;
-  const isCustomSort = Boolean(Number(analysisState.sortCycle));
+  const columnCount = hasMinimum ? 14 : 13;
+  // 每个种类单独取正式榜里分数最高的两个不同分值，命中的行整行标红。
+  const topScoreTiers = [...new Set(sourceRows
+    .filter(row => row.rankingEligible)
+    .map(row => row.longTermScore))]
+    .sort((left, right) => right - left)
+    .slice(0, 2);
+  const isTopTier = row => row.rankingEligible && topScoreTiers.includes(row.longTermScore);
+  // Every hit-rate column uses the same rule, so a low rate reads the same wherever it appears.
+  const rateCell = value => `<td class="analysis-metric${value < 0.6 ? ' analysis-metric-low' : ''}">${formatRate(value)}</td>`;
   const renderRow = row => `
-    <tr class="hover-row" data-action="manage-directory" data-name="${escapeHtml(row.name)}" data-mode="${escapeHtml(projectState.modeId)}" data-official-rank="${row.officialRank || ''}">
+    <tr class="hover-row${isTopTier(row) ? ' top-tier-row' : ''}" data-action="manage-directory" data-name="${escapeHtml(row.name)}" data-mode="${escapeHtml(projectState.modeId)}" data-official-rank="${row.officialRank || ''}">
       <td>${row.rankingEligible ? `<span class="rank-num">${row.officialRank}</span>` : '<span class="ranking-observation-label">观察</span>'}</td>
-      <th scope="row"><b>${escapeHtml(row.name)}</b>${row.daysInSystem <= 3 ? ' <span class="badge warning">新晋</span>' : ''}${row.currentState === false && row.currentStreak >= Math.max(3, row.maxWrongStreak - 1) ? ' <span class="badge purple">极限连断</span>' : ''}
-        ${sparkline(row.stateHistory, row.stateDates)}
-        <button class="btn btn-outline trend-button" type="button" data-action="show-trend" data-name="${escapeHtml(row.name)}" data-mode="${escapeHtml(projectState.modeId)}"${breakRankingNames.has(row.name) ? ' data-show-break-ranking="true"' : ''}>📈 走势</button>
+      <th scope="row" class="analysis-name-cell"><span class="analysis-name-text"><b>${escapeHtml(row.name)}</b>${row.daysInSystem <= 3 ? ' <span class="badge warning">新晋</span>' : ''}${row.currentState === false && row.currentStreak >= Math.max(3, row.maxWrongStreak - 1) ? ' <span class="badge purple">极限连断</span>' : ''}</span>
+        <span class="analysis-name-tools">${sparkline(row.stateHistory, row.stateDates)}<button class="btn btn-outline trend-button" type="button" title="${escapeHtml(row.name)}走势" aria-label="${escapeHtml(row.name)}走势" data-action="show-trend" data-name="${escapeHtml(row.name)}" data-mode="${escapeHtml(projectState.modeId)}"${breakRankingNames.has(row.name) ? ' data-show-break-ranking="true"' : ''}>📈</button></span>
       </th>
-      <td class="status-right">${formatRate(row.recent30Rate)}</td>
       <td class="${row.currentState === true ? 'status-right' : row.currentState === false ? 'status-wrong' : 'status-missing'}">${row.currentState == null ? '待定' : row.currentState ? '✓ 连对中' : '✕ 连断中'}</td>
-      <td><b>${row.currentStreak}</b> 天</td><td>${row.totalBroken} 次</td>
-      <td class="status-right"><b>${row.maxRightStreak}</b> 天</td>
-      ${hasMinimum ? `<td class="status-right"><b>${minimumRightStreak(row.stateHistory)}</b> 天</td>` : ''}
-      <td class="status-wrong"><b>${row.maxWrongStreak}</b> 天</td>
-      <td class="status-rate">${formatRate(row.daysInSystem ? row.totalRight / row.daysInSystem : 0)}</td>
-      <td class="status-right">${formatRate(row.recent7Rate)}</td>
-      <td class="status-right">${formatRate(row.recent10Rate)}</td>
-      <td class="status-rate"><details class="ranking-score-details"><summary aria-label="${escapeHtml(row.name)}评分依据">${row.daysInSystem ? row.longTermScore.toFixed(1) : '—'}</summary>
-        <div>有效 ${row.daysInSystem} 天，${row.totalRight} 对 / ${row.totalBroken} 错。<br>历史命中率 ${formatRate(row.daysInSystem ? row.totalRight / row.daysInSystem : 0)}，Wilson 长期可靠分 ${row.longTermScore.toFixed(1)}。<br>${row.rankingEligible ? `正式榜第 ${row.officialRank} 名` : `还需 ${LONG_TERM_MIN_DAYS - row.daysInSystem} 个有效统计日参榜`}。<br>同分先比较近120有效日最高连错，再比较近30有效日命中率，最后比较有效天数。</div>
+      <td class="analysis-metric"><b>${row.currentStreak}</b> 天</td><td class="analysis-metric">${row.totalBroken} 次</td>
+      <td class="analysis-metric"><b>${row.maxRightStreak}</b> 天</td>
+      ${hasMinimum ? `<td class="analysis-metric"><b>${minimumRightStreak(row.stateHistory)}</b> 天</td>` : ''}
+      <td class="analysis-metric"><b>${row.maxWrongStreak}</b> 天</td>
+      ${rateCell(row.daysInSystem ? row.totalRight / row.daysInSystem : 0)}
+      <td class="analysis-metric"><details class="ranking-score-details"><summary aria-label="${escapeHtml(row.name)}评分依据">${row.daysInSystem ? row.longTermScore.toFixed(1) : '—'}</summary>
+        <div>历史有效 ${row.daysInSystem} 天，${row.totalRight} 对 / ${row.totalBroken} 错，历史命中率 ${formatRate(row.daysInSystem ? row.totalRight / row.daysInSystem : 0)}。<br>长期分仅计算最近 ${row.longTermDays} 个有效日，${row.longTermRight} 对 / ${row.longTermDays - row.longTermRight} 错。<br>窗口命中率 ${formatRate(row.longTermDays ? row.longTermRight / row.longTermDays : 0)}，Wilson 长期可靠分 ${row.longTermScore.toFixed(1)}。<br>${row.rankingEligible ? `正式榜第 ${row.officialRank} 名` : `还需 ${LONG_TERM_MIN_DAYS - row.daysInSystem} 个有效统计日参榜`}。<br>同分先比较近120有效日最高连错，再比较近30有效日命中率，最后比较有效天数。</div>
       </details></td>
-      <td class="status-wrong">${row.recent120MaxWrong} 天</td>
-      <td class="status-wrong">${row.recent30WrongCount} 次</td>
-      <td class="status-wrong">${currentMonthWrongCount(row)} 次</td>
-      <td><b>${row.daysInSystem}</b> 天</td>
+      <td class="analysis-metric">${row.recent120WrongCount} 次</td>
+      <td class="analysis-metric">${row.recent30WrongCount} 次</td>
+      <td class="analysis-metric">${currentMonthWrongCount(row)} 次</td>
+      <td class="analysis-metric"><b>${row.daysInSystem}</b> 天</td>
     </tr>`;
   const noUpdateList = missing.map((row, index) => `
     <div class="no-update-row">
@@ -528,7 +567,7 @@ export function renderAnalysis({ project, projectState, analysisState = {} }) {
   `).join('');
   return `
     <section class="legacy-page legacy-analysis-page" aria-label="${escapeHtml(project.name)}详细分析">
-      <h2 class="visually-hidden">详细分析</h2>
+      ${pageHeading('详细分析', `${project.name} · ${modeName} · 长期稳定榜与断更统计`)}
       <div id="analysis-mode-switcher" class="section-title analysis-mode-switcher" role="tablist" aria-label="分析模式">
         ${project.modes.map(mode => `
           <button class="btn btn-outline analysis-mode-btn ${mode.id === projectState.modeId ? 'active' : ''}" type="button"
@@ -555,38 +594,27 @@ export function renderAnalysis({ project, projectState, analysisState = {} }) {
         ` : ''}
       </section>
 
-      <div class="ranking-toolbar">
-        <b>${escapeHtml(modeName)} · 长期稳定榜</b>
-        <button class="btn btn-outline" type="button" data-action="reset-analysis-ranking"${isCustomSort ? '' : ' disabled'}>${isCustomSort ? '恢复榜单顺序' : '当前为榜单顺序'}</button>
-      </div>
-      <details class="ranking-rules"><summary>排名规则 · 满120个有效统计日参榜</summary>
-        <p>长期可靠分（保留一位小数）从高到低；同分按近120有效日最高连错从少到多、近30有效日命中率从高到低、有效天数从多到少依次比较，最后按资料名称排序。</p>
-        <p>仅有效开奖计入天数。已开奖但目录缺失按错；待开奖不计天数，并中断连续段。窗口不足120或30个有效日时，使用已有记录。</p>
-        <p>长期可靠分采用 Wilson 下限 × 100，z = 1.96，n = 有效天数，p = 正确次数 ÷ n：<br>(p + z²/(2n) − z × √(p(1−p)/n + z²/(4n²))) ÷ (1 + z²/n) × 100。零个有效日不评分。此分数用于评价历史记录，不是预测命中率。</p>
-      </details>
       <div class="analysis-pager">共 ${sourceRows.length} 条，正式榜 ${officialRows.length} 条，观察区 ${observationRows.length} 条
         <span class="analysis-sort-note">${analysisState.sortCycle ? '当前按表头字段查看；正式榜名次保留' : '长期可靠分优先 · 近期表现辅助'}</span>
       </div>
+      <p class="analysis-scroll-hint">表格较宽，可左右滚动查看全部 ${columnCount} 列；资料名称列已固定不动。</p>
       <div class="analysis-table-wrap">
         <table class="analysis-table" id="table-all">
           <thead><tr>
             <th># 榜单名次</th>
             ${analysisHeader('资料名称', 'default', analysisState)}
-            ${analysisHeader('近30有效日命中率', 'recent30Rate', analysisState)}
             ${analysisHeader('目前状态', 'status', analysisState)}
-            ${analysisHeader('持续天数', 'count', analysisState)}
-            ${analysisHeader('总连断', 'total', analysisState)}
-            ${analysisHeader('最高连对天数', 'maxRight', analysisState)}
-            ${hasMinimum ? analysisHeader('最低连对天数', 'minRight', analysisState) : ''}
-            ${analysisHeader('最高连错天数', 'maxWrong', analysisState)}
-            ${analysisHeader('命中率', 'hitrate', analysisState)}
-            ${analysisHeader('7天命中率', 'recent7', analysisState)}
-            ${analysisHeader('10天命中率', 'recent10', analysisState)}
-            ${analysisHeader('长期可靠分', 'longTermScore', analysisState)}
-            ${analysisHeader('近120有效日最高连错', 'recent120MaxWrong', analysisState)}
-            ${analysisHeader('近30错次', 'recent30Wrong', analysisState)}
-            ${analysisHeader('本月错次', 'monthWrong', analysisState)}
-            ${analysisHeader('有效入库天数', 'days', analysisState)}
+            ${analysisHeader('持续天数', 'count', analysisState, true)}
+            ${analysisHeader('总连断', 'total', analysisState, true)}
+            ${analysisHeader('最高连对天数', 'maxRight', analysisState, true)}
+            ${hasMinimum ? analysisHeader('最低连对天数', 'minRight', analysisState, true) : ''}
+            ${analysisHeader('最高连错天数', 'maxWrong', analysisState, true)}
+            ${analysisHeader('命中率', 'hitrate', analysisState, true)}
+            ${analysisHeader('长期可靠分', 'longTermScore', analysisState, true)}
+            ${analysisHeader('近120天总连断次数', 'recent120WrongCount', analysisState, true)}
+            ${analysisHeader('近30错次', 'recent30Wrong', analysisState, true)}
+            ${analysisHeader('本月错次', 'monthWrong', analysisState, true)}
+            ${analysisHeader('有效入库天数', 'days', analysisState, true)}
           </tr></thead>
           <tbody data-ranking-group="official" aria-label="正式榜">${officialRows.map(renderRow).join('') || `<tr><td colspan="${columnCount}" class="no-update-empty">暂无满120个有效统计日的资料</td></tr>`}</tbody>
           <tbody data-ranking-group="observation" aria-label="观察区">
@@ -709,7 +737,7 @@ function dailyNumberTokens(value) {
 function dailyBelowRateExtra(stat) {
   if (!stat?.total) return {};
   const rate = stat.right / stat.total;
-  return { monthlyRanking: { kind: 'belowRate', qualifies: rate < 0.68, rate } };
+  return { monthlyRanking: { kind: 'belowRate', qualifies: rate < 0.7, rate } };
 }
 
 function dailyNumberTierExtra(record, maxTier) {
@@ -943,12 +971,12 @@ export function renderDailyRankingModal({ project, snapshot, monthKey, modeId })
   const title = `${year}年${month}月 · ${mode.name}`;
   const tierName = maxTier === 5 ? '五' : '四';
   const heading = rankingKind === 'belowRate'
-    ? `本月低于68%：<b>${hitDates.length}天</b>`
+    ? `本月低于70%：<b>${hitDates.length}天</b>`
     : rankingKind === 'numberTier'
       ? `开奖号进入前${tierName}档：<b>${hitDates.length}天</b>`
       : `<span>第一名本月命中：<b>${hitDates.filter(item => item.firstPlaceHit).length}次</b></span><span>第二名本月命中：<b>${hitDates.filter(item => item.secondPlaceHit).length}次</b></span>${modeId === 'shengxiao' ? `<span>第三名本月命中：<b>${hitDates.filter(item => item.thirdPlaceHit).length}次</b></span>` : ''}`;
   const emptyText = rankingKind === 'belowRate'
-    ? '本月没有低于68%的日期'
+    ? '本月没有低于70%的日期'
     : rankingKind === 'numberTier'
       ? `本月没有开奖号进入前${tierName}档的日期`
       : '本月没有第一名或第二名命中日期';
@@ -974,7 +1002,7 @@ export function renderDailyRankingModal({ project, snapshot, monthKey, modeId })
 
 function dailyMonthRanking(summary) {
   if (!summary) return '';
-  if (summary.kind === 'belowRate') return `<div class="daily-stats-month-ranking"><span>本月低于68%：<b>${summary.qualifyingDays}天</b></span></div>`;
+  if (summary.kind === 'belowRate') return `<div class="daily-stats-month-ranking"><span>本月低于70%：<b>${summary.qualifyingDays}天</b></span></div>`;
   if (summary.kind === 'numberTier') {
     const tierName = summary.maxTier === 5 ? '五' : '四';
     return `<div class="daily-stats-month-ranking"><span>开奖号进入前${tierName}档：<b>${summary.qualifyingDays}天</b></span></div>`;
@@ -1094,7 +1122,7 @@ export function renderDailyStats({
     return { monthKey, dates, rows, summaryModes, summaryRawModes, summaryTotal, summaryRawTotal, monthlyRankings };
   });
   const renderSummary = month => `
-    <div class="daily-stats-summary">
+    <div class="daily-stats-summary${project.modes.length + 1 < 5 ? ' summary-fit' : ''}">
       ${project.modes.map((mode, index) => {
         const ranking = month.monthlyRankings[mode.id];
         const action = ranking ? ` daily-stats-summary-card-action" data-action="show-daily-ranking" data-mode="${escapeHtml(mode.id)}" data-month="${escapeHtml(month.monthKey)}" role="button" tabindex="0` : '';
@@ -1175,7 +1203,9 @@ export function renderManage({
           </div>
           <div class="batch-column-head"><span>独立数据内容区 (支持正则全符号兼容)</span><span>锁定注入日期</span><span>对应开奖结果</span></div>
           <div id="batch-rows-container" class="batch-rows-container">${batchRows}</div>
-          <button id="btn-execute-batch" class="btn btn-primary batch-execute" type="submit">🚀 执行逐行安全分发 (防丢包事务模式)</button>
+          <div class="batch-actions">
+            <button id="btn-execute-batch" class="btn btn-primary batch-execute" type="submit">🚀 执行逐行安全分发 (防丢包事务模式)</button>
+          </div>
         </form>
       </div>
 

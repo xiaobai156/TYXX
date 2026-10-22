@@ -50,7 +50,8 @@ function numericTokens(text) {
 }
 
 function analysisRowNames(markup) {
-  return [...markup.matchAll(/<tr class="hover-row"[^>]*data-name="([^"]+)"/g)]
+  // 行上可能追加 top-tier-row 等标记类，只要求 class 以 hover-row 开头。
+  return [...markup.matchAll(/<tr class="hover-row[^"]*"[^>]*data-name="([^"]+)"/g)]
     .map(match => match[1]);
 }
 
@@ -64,9 +65,10 @@ test('renders correctness and streak metrics in detailed analysis', () => {
   assert.match(html, /data-key="monthWrong"/);
   assert.match(cells[1], /^目录甲/);
   assert.equal(cells[0], '观察');
-  assert.equal(cells[3], '✕ 连断中');
-  assert.deepEqual([...cells.slice(4, 11), ...cells.slice(13)].flatMap(numericTokens), [
-    '1', '1', '1', '1', '50.0%', '50.0%', '50.0%', '1', '0', '2'
+  // 2026-10-19 去掉近30有效日命中率、7天命中率、10天命中率三列显示后，列序号整体前移。
+  assert.equal(cells[2], '✕ 连断中');
+  assert.deepEqual([...cells.slice(3, 8), ...cells.slice(10)].flatMap(numericTokens), [
+    '1', '1', '1', '1', '50.0%', '1', '0', '2'
   ]);
   assert.match(html, /近7期走势/);
   assert.match(html, /2026-06-02 错误/);
@@ -221,4 +223,26 @@ test('official ranks survive manual sorting and remain separate from younger per
   assert.equal(rowCells(sorted, '老乙')[0], '2');
   assert.equal(rowCells(sorted, '新人')[0], '观察');
   assert.deepEqual(analysisRowNames(renderAnalysis({ ...input, analysisState: { sortKey: 'total', sortCycle: 0 } })), ['老甲', '老乙', '新人']);
+});
+
+test('score details distinguish the last 120 valid results from preserved historical totals', () => {
+  const days = {};
+  for (let index = 0; index < 140; index += 1) {
+    const date = new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10);
+    days[date] = { pingteyixiao: { query: '鼠', entries: [{ name: '长期目录', content: index < 20 ? '牛' : '鼠' }] } };
+  }
+  const html = renderAnalysis({ project, projectState: { modeId: 'pingteyixiao', snapshot: { days } } });
+  const cells = rowCells(html, '长期目录');
+  // 去掉三列后：4=总连断，7=命中率，8=长期可靠分。
+  assert.match(cells[8], /^96\.9 /);
+  assert.match(cells[8], /历史有效 140 天，120 对 \/ 20 错/);
+  assert.match(cells[8], /长期分仅计算最近 120 个有效日，120 对 \/ 0 错/);
+  assert.match(cells[8], /窗口命中率 100\.0%/);
+  assert.equal(cells[4], '20 次');
+  assert.equal(cells[7], '85.7%');
+  assert.equal(cells.at(-1), '140 天');
+
+  const young = rowCells(renderAnalysis({ project, projectState }), '目录甲');
+  assert.match(young[8], /长期分仅计算最近 2 个有效日，1 对 \/ 1 错/);
+  assert.match(young[8], /还需 118 个有效统计日参榜/);
 });
